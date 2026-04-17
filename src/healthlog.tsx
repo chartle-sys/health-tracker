@@ -1,5 +1,5 @@
 import { useState, useReducer, useEffect } from "react";
-import { loadRemoteState, saveRemoteState } from "./supabase";
+import { supabase, loadRemoteState, saveRemoteState, signUp, signIn, signOut } from "./supabase";
 
 const D = {
   bg:"#1a1a1a", surface:"#242424", card:"#2e2e2e", border:"#3a3a3a",
@@ -91,17 +91,34 @@ export default function App(){
   const [editHabits,setEditHabits]=useState(false);
   const [dashRange,setDashRange]=useState(30);
   const [synced,setSynced]=useState(false);
+  const [user,setUser]=useState<any>(null);
+  const [authLoading,setAuthLoading]=useState(true);
+
+  // Auth state listener
+  useEffect(()=>{
+    supabase.auth.getSession().then(({data:{session}})=>{
+      setUser(session?.user??null);
+      setAuthLoading(false);
+    });
+    const {data:{subscription}}=supabase.auth.onAuthStateChange((_,session)=>{
+      setUser(session?.user??null);
+      if(!session?.user) setSynced(false);
+    });
+    return()=>subscription.unsubscribe();
+  },[]);
 
   // Save to localStorage immediately on every state change
   useEffect(()=>{try{localStorage.setItem("healthlog_v8",JSON.stringify(state));}catch{}}, [state]);
 
-  // On mount: load from Supabase and replace local state if remote exists
+  // Load from Supabase when user signs in
   useEffect(()=>{
+    if(!user){setSynced(false);return;}
+    setSynced(false);
     loadRemoteState().then(remote=>{
       if(remote) dispatch({type:"SET_ALL",payload:remote});
       setSynced(true);
     });
-  },[]);
+  },[user]);
 
   // Debounce-save to Supabase 2s after each state change (once initial load is done)
   useEffect(()=>{
@@ -109,6 +126,13 @@ export default function App(){
     const t=setTimeout(()=>{saveRemoteState(state);},2000);
     return()=>clearTimeout(t);
   },[state,synced]);
+
+  if(authLoading) return(
+    <div style={{fontFamily:"system-ui,sans-serif",background:D.bg,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",color:D.muted,fontSize:14}}>
+      Loading…
+    </div>
+  );
+  if(!user) return <AuthScreen/>;
 
   const day=state.days[date]||emptyDay();
   const updateDay=fn=>dispatch({type:"SET_DAY",payload:{date,day:fn(day)}});
@@ -136,7 +160,7 @@ export default function App(){
 
   return(
     <div style={{fontFamily:"system-ui,sans-serif",background:D.bg,minHeight:"100vh",color:D.text,fontSize:14}}>
-      <Header tab={tab} setTab={setTab}/>
+      <Header tab={tab} setTab={setTab} user={user}/>
       {tab==="log"
         ?<LogTab
             day={day} updateDay={updateDay} date={date} setDate={setDate}
@@ -151,18 +175,82 @@ export default function App(){
   );
 }
 
-function Header({tab,setTab}){
+function AuthScreen(){
+  const [mode,setMode]=useState<"signin"|"signup">("signin");
+  const [email,setEmail]=useState("");
+  const [password,setPassword]=useState("");
+  const [error,setError]=useState("");
+  const [loading,setLoading]=useState(false);
+  const [confirm,setConfirm]=useState(false);
+
+  const submit=async(e:React.FormEvent)=>{
+    e.preventDefault();
+    setError(""); setLoading(true);
+    if(mode==="signup"){
+      const {error}=await signUp(email,password);
+      if(error) setError(error.message);
+      else setConfirm(true);
+    } else {
+      const {error}=await signIn(email,password);
+      if(error) setError(error.message);
+    }
+    setLoading(false);
+  };
+
+  return(
+    <div style={{fontFamily:"system-ui,sans-serif",background:D.bg,minHeight:"100vh",display:"flex",alignItems:"center",justifyContent:"center",padding:16}}>
+      <div style={{background:D.card,border:`1px solid ${D.border}`,borderRadius:12,padding:32,width:"100%",maxWidth:360}}>
+        <div style={{fontWeight:700,fontSize:20,color:D.accent,marginBottom:4}}>HealthLog</div>
+        <div style={{fontSize:13,color:D.muted,marginBottom:24}}>{mode==="signin"?"Sign in to your account":"Create a new account"}</div>
+        {confirm?(
+          <div style={{fontSize:13,color:D.green,lineHeight:1.6}}>
+            Check your email for a confirmation link, then sign in.
+            <br/>
+            <button onClick={()=>{setConfirm(false);setMode("signin");}} style={{...lBtn,marginTop:12,fontSize:13}}>Back to sign in</button>
+          </div>
+        ):(
+          <form onSubmit={submit}>
+            <div style={{marginBottom:12}}>
+              <div style={{fontSize:12,color:D.muted,marginBottom:4}}>Email</div>
+              <input type="email" required value={email} onChange={e=>setEmail(e.target.value)}
+                style={{...iSt,width:"100%"}} placeholder="you@example.com"/>
+            </div>
+            <div style={{marginBottom:20}}>
+              <div style={{fontSize:12,color:D.muted,marginBottom:4}}>Password</div>
+              <input type="password" required value={password} onChange={e=>setPassword(e.target.value)}
+                style={{...iSt,width:"100%"}} placeholder="••••••••"/>
+            </div>
+            {error&&<div style={{fontSize:12,color:D.red,marginBottom:12}}>{error}</div>}
+            <button type="submit" disabled={loading} style={{...pBtn,width:"100%",justifyContent:"center",opacity:loading?.6:1}}>
+              {loading?"…":mode==="signin"?"Sign in":"Create account"}
+            </button>
+            <div style={{textAlign:"center",marginTop:16,fontSize:12,color:D.muted}}>
+              {mode==="signin"?"Don't have an account?":"Already have an account?"}{" "}
+              <button type="button" onClick={()=>{setMode(mode==="signin"?"signup":"signin");setError("");}}
+                style={{...lBtn,fontSize:12}}>{mode==="signin"?"Sign up":"Sign in"}</button>
+            </div>
+          </form>
+        )}
+      </div>
+    </div>
+  );
+}
+
+function Header({tab,setTab,user}:{tab:string,setTab:(t:string)=>void,user:any}){
   return(
     <div style={{background:D.surface,borderBottom:`1px solid ${D.border}`,padding:"0 16px"}}>
       <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",maxWidth:820,margin:"0 auto",height:52}}>
         <span style={{fontWeight:600,fontSize:16,color:D.accent}}>HealthLog</span>
-        <div style={{display:"flex",gap:4}}>
+        <div style={{display:"flex",alignItems:"center",gap:4}}>
           {[["log","Daily Log"],["dash","Dashboard"]].map(([id,label])=>(
             <button key={id} onClick={()=>setTab(id)} style={{
               background:tab===id?D.accentDim:"transparent",color:tab===id?"#c5c0f5":D.muted,
               border:"none",borderRadius:6,padding:"6px 16px",cursor:"pointer",fontSize:13,fontWeight:500
             }}>{label}</button>
           ))}
+          <div style={{width:1,height:20,background:D.border,margin:"0 4px"}}/>
+          <span style={{fontSize:11,color:D.muted,maxWidth:140,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{user?.email}</span>
+          <button onClick={()=>signOut()} style={{...gBtn,fontSize:11,padding:"4px 10px"}}>sign out</button>
         </div>
       </div>
     </div>
@@ -453,26 +541,6 @@ function WorkoutSection({day,updateDay,weekTotals,weekSets,setWeekSets,getSetAmt
 
   return(
     <div>
-      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(210px,1fr))",gap:8,marginBottom:16}}>
-        {EXERCISES.map(ex=>{
-          const val=weekTotals[ex.key]||0;
-          const pct=Math.min(val/ex.weeklyTarget*100,100);
-          const color=pct>=100?D.green:pct>=60?D.amber:D.accent;
-          const dispVal=ex.unit==="miles"?val.toFixed(1):Math.round(val);
-          return(
-            <div key={ex.key} style={{background:D.surface,border:`1px solid ${D.border}`,borderRadius:8,padding:"10px 12px"}}>
-              <div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}>
-                <span style={{fontSize:13,fontWeight:500}}>{ex.label}</span>
-                <span style={{fontSize:11,color:D.muted}}>{dispVal}/{ex.weeklyTarget} {ex.unit}</span>
-              </div>
-              <div style={{height:4,background:D.border,borderRadius:2,overflow:"hidden"}}>
-                <div style={{height:"100%",width:`${pct}%`,background:color,borderRadius:2,transition:"width 0.2s"}}/>
-              </div>
-            </div>
-          );
-        })}
-      </div>
-
       <div style={{marginBottom:12}}>
         <div style={{fontSize:11,color:D.muted,marginBottom:8,textTransform:"uppercase",letterSpacing:.8}}>Tap to log a set</div>
         <div style={{display:"flex",flexWrap:"wrap",gap:8}}>
@@ -491,6 +559,26 @@ function WorkoutSection({day,updateDay,weekTotals,weekSets,setWeekSets,getSetAmt
             );
           })}
         </div>
+      </div>
+
+      <div style={{display:"grid",gridTemplateColumns:"repeat(auto-fill,minmax(210px,1fr))",gap:8,marginBottom:16}}>
+        {EXERCISES.map(ex=>{
+          const val=weekTotals[ex.key]||0;
+          const pct=Math.min(val/ex.weeklyTarget*100,100);
+          const color=pct>=100?D.green:pct>=60?D.amber:D.accent;
+          const dispVal=ex.unit==="miles"?val.toFixed(1):Math.round(val);
+          return(
+            <div key={ex.key} style={{background:D.surface,border:`1px solid ${D.border}`,borderRadius:8,padding:"10px 12px"}}>
+              <div style={{display:"flex",justifyContent:"space-between",marginBottom:5}}>
+                <span style={{fontSize:13,fontWeight:500}}>{ex.label}</span>
+                <span style={{fontSize:11,color:D.muted}}>{dispVal}/{ex.weeklyTarget} {ex.unit}</span>
+              </div>
+              <div style={{height:4,background:D.border,borderRadius:2,overflow:"hidden"}}>
+                <div style={{height:"100%",width:`${pct}%`,background:color,borderRadius:2,transition:"width 0.2s"}}/>
+              </div>
+            </div>
+          );
+        })}
       </div>
 
       {day.workouts.length>0&&(
