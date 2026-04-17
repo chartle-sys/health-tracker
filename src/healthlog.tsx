@@ -1,4 +1,5 @@
 import { useState, useReducer, useEffect } from "react";
+import { loadRemoteState, saveRemoteState } from "./supabase";
 
 const D = {
   bg:"#1a1a1a", surface:"#242424", card:"#2e2e2e", border:"#3a3a3a",
@@ -78,6 +79,7 @@ function reducer(state,{type,payload}){
     case"ADD_SUPPORT":     return{...state,supportExercises:[...state.supportExercises,{id:state.nextSupportId,name:payload.name}],nextSupportId:state.nextSupportId+1};
     case"DEL_SUPPORT":     return{...state,supportExercises:state.supportExercises.filter(e=>e.id!==payload.id)};
     case"RENAME_SUPPORT":  return{...state,supportExercises:state.supportExercises.map(e=>e.id===payload.id?{...e,name:payload.name}:e)};
+    case"SET_ALL":        return{...payload};
     default:return state;
   }
 }
@@ -88,8 +90,25 @@ export default function App(){
   const [date,setDate]=useState(todayStr());
   const [editHabits,setEditHabits]=useState(false);
   const [dashRange,setDashRange]=useState(30);
+  const [synced,setSynced]=useState(false);
 
+  // Save to localStorage immediately on every state change
   useEffect(()=>{try{localStorage.setItem("healthlog_v8",JSON.stringify(state));}catch{}}, [state]);
+
+  // On mount: load from Supabase and replace local state if remote exists
+  useEffect(()=>{
+    loadRemoteState().then(remote=>{
+      if(remote) dispatch({type:"SET_ALL",payload:remote});
+      setSynced(true);
+    });
+  },[]);
+
+  // Debounce-save to Supabase 2s after each state change (once initial load is done)
+  useEffect(()=>{
+    if(!synced) return;
+    const t=setTimeout(()=>{saveRemoteState(state);},2000);
+    return()=>clearTimeout(t);
+  },[state,synced]);
 
   const day=state.days[date]||emptyDay();
   const updateDay=fn=>dispatch({type:"SET_DAY",payload:{date,day:fn(day)}});
